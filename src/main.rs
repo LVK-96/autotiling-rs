@@ -1,11 +1,29 @@
 use swayipc::{Connection, EventType};
-use swayipc::{Event, NodeLayout, NodeType, WindowChange};
+use swayipc::{Event, Node, NodeLayout, NodeType, WindowChange};
 
 use clap::Parser;
+
+fn focused_path_has_tabbed_or_stacked(node: &Node) -> bool {
+    if node.layout == NodeLayout::Stacked || node.layout == NodeLayout::Tabbed {
+        return true;
+    }
+
+    let focused_id = match node.focus.first() {
+        Some(id) => *id,
+        None => return false,
+    };
+
+    node.nodes
+        .iter()
+        .chain(node.floating_nodes.iter())
+        .find(|child| child.id == focused_id)
+        .map_or(false, focused_path_has_tabbed_or_stacked)
+}
 
 fn switch_splitting(
     conn: &mut Connection,
     workspaces: &[i32],
+    disable_in_tabbed_stacked: bool,
     depth_limit: usize,
 ) -> Result<(), String> {
     // Check if focused workspace is in "allowed list".
@@ -27,6 +45,10 @@ fn switch_splitting(
 
     // get info from focused node and parent node which unfortunately requires us to call get_tree
     let tree = conn.get_tree().map_err(|_| "get_tree() failed")?;
+    if disable_in_tabbed_stacked && focused_path_has_tabbed_or_stacked(&tree) {
+        return Ok(());
+    }
+
     let focused_node = tree
         .find_focused_as_ref(|n| n.focused)
         .ok_or("Could not find the focused node")?;
@@ -91,6 +113,10 @@ struct Cli {
     /// Stop alternating split direction after reaching this container depth.
     #[clap(long, short = 'l', default_value_t = 0)]
     limit: usize,
+
+    /// Disable autotiling while the focused window is inside a tabbed or stacked container.
+    #[clap(long)]
+    disable_in_tabbed_stacked: bool,
 }
 
 fn main() -> Result<(), std::io::Error> {
@@ -110,7 +136,9 @@ fn main() -> Result<(), std::io::Error> {
                     // delete a node we find that the e.container.rect.height and e.container.rect.width are stale,
                     // and therefore we make the wrong decision on which layout our next window should be.
                     // Refer to https://github.com/swaywm/sway/issues/5873
-                    if let Err(err) = switch_splitting(&mut conn, &args.workspace, args.limit) {
+                    if let Err(err) =
+                        switch_splitting(&mut conn, &args.workspace, args.disable_in_tabbed_stacked, args.limit)
+                    {
                         eprintln!("err: {}", err);
                     }
                 }
